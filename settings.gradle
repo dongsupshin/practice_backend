@@ -1,1 +1,4 @@
 rootProject.name = 'practice_backend'
+
+include 'helloworld-lib'
+include 'practice-backend-app'
