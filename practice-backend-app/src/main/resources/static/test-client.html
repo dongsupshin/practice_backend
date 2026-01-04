@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>의료 기기 실시간 모니터링 (테스트 클라이언트)</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2/lib/stomp.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .panel {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 5px;
+        }
+        .panel h2 {
+            margin-top: 0;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .measurement-item {
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 3px;
+            background-color: #f9f9f9;
+        }
+        .measurement-item strong {
+            color: #007bff;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            border: none;
+            border-radius: 3px;
+            background-color: #007bff;
+            color: white;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        input, select {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            width: 200px;
+        }
+        #log {
+            height: 300px;
+            overflow-y: auto;
+            background-color: #f5f5f5;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin: 2px 0;
+        }
+        .log-entry.info { color: #0066cc; }
+        .log-entry.success { color: #28a745; }
+        .log-entry.error { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <h1>의료 기기 WebSocket 실시간 모니터링 테스트</h1>
+    
+    <div class="container">
+        <!-- 웹 클라이언트 패널 -->
+        <div class="panel">
+            <h2>웹 클라이언트 (데이터 수신)</h2>
+            <div id="client-status" class="status disconnected">연결 안됨</div>
+            <button id="client-connect-btn" onclick="connectClient()">연결</button>
+            <button id="client-disconnect-btn" onclick="disconnectClient()" disabled>연결 끊기</button>
+            
+            <h3>구독 옵션</h3>
+            <label>
+                <input type="checkbox" id="subscribe-all" checked> 모든 측정 데이터 (/topic/measurements)
+            </label><br>
+            <label>
+                <input type="checkbox" id="subscribe-by-code"> 측정코드별 구독
+                <input type="text" id="measurement-code-input" placeholder="예: BP001" style="width: 150px;">
+            </label><br>
+            <label>
+                <input type="checkbox" id="subscribe-by-device"> 기기별 구독
+                <input type="text" id="device-id-input" placeholder="예: DEVICE-001" style="width: 150px;">
+            </label>
+            
+            <h3>수신된 데이터</h3>
+            <div id="client-measurements"></div>
+        </div>
+        
+        <!-- 의료 기기 시뮬레이터 패널 -->
+        <div class="panel">
+            <h2>의료 기기 시뮬레이터 (데이터 전송)</h2>
+            <div id="device-status" class="status disconnected">연결 안됨</div>
+            <button id="device-connect-btn" onclick="connectDevice()">연결</button>
+            <button id="device-disconnect-btn" onclick="disconnectDevice()" disabled>연결 끊기</button>
+            
+            <h3>측정 데이터 입력</h3>
+            <label>측정코드:</label>
+            <input type="text" id="measurement-code" value="BP001" placeholder="예: BP001"><br>
+            <label>기기 ID:</label>
+            <input type="text" id="device-id" value="DEVICE-001" placeholder="예: DEVICE-001"><br>
+            <label>측정값:</label>
+            <input type="number" id="measurement-value" value="120.5" step="0.1"><br>
+            <label>단위:</label>
+            <input type="text" id="measurement-unit" value="mmHg" placeholder="예: mmHg"><br>
+            <button onclick="sendMeasurement()" id="send-btn" disabled>데이터 전송</button>
+            <button onclick="startAutoSend()" id="auto-send-btn" disabled>자동 전송 시작</button>
+            <button onclick="stopAutoSend()" id="stop-auto-send-btn" disabled>자동 전송 중지</button>
+        </div>
+    </div>
+    
+    <div class="panel" style="margin-top: 20px;">
+        <h2>로그</h2>
+        <div id="log"></div>
+    </div>
+    
+    <script>
+        let clientStomp = null;
+        let deviceStomp = null;
+        let autoSendInterval = null;
+        
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        
+        // 웹 클라이언트 연결
+        function connectClient() {
+            const socket = new SockJS('http://localhost:8080/ws/client');
+            clientStomp = Stomp.over(socket);
+            clientStomp.debug = null; // 디버그 메시지 비활성화
+            
+            clientStomp.connect({}, function(frame) {
+                log('웹 클라이언트 연결 성공', 'success');
+                document.getElementById('client-status').textContent = '연결됨';
+                document.getElementById('client-status').className = 'status connected';
+                document.getElementById('client-connect-btn').disabled = true;
+                document.getElementById('client-disconnect-btn').disabled = false;
+                
+                // 구독 설정
+                if (document.getElementById('subscribe-all').checked) {
+                    subscribeToAll();
+                }
+                
+                const measurementCode = document.getElementById('measurement-code-input').value;
+                if (document.getElementById('subscribe-by-code').checked && measurementCode) {
+                    subscribeByCode(measurementCode);
+                }
+                
+                const deviceId = document.getElementById('device-id-input').value;
+                if (document.getElementById('subscribe-by-device').checked && deviceId) {
+                    subscribeByDevice(deviceId);
+                }
+            }, function(error) {
+                log('웹 클라이언트 연결 실패: ' + error, 'error');
+            });
+        }
+        
+        function disconnectClient() {
+            if (clientStomp !== null) {
+                clientStomp.disconnect();
+                clientStomp = null;
+            }
+            document.getElementById('client-status').textContent = '연결 안됨';
+            document.getElementById('client-status').className = 'status disconnected';
+            document.getElementById('client-connect-btn').disabled = false;
+            document.getElementById('client-disconnect-btn').disabled = true;
+            document.getElementById('client-measurements').innerHTML = '';
+            log('웹 클라이언트 연결 끊김', 'info');
+        }
+        
+        function subscribeToAll() {
+            if (clientStomp) {
+                clientStomp.subscribe('/topic/measurements', function(data) {
+                    const measurement = JSON.parse(data.body);
+                    log(`모든 측정 데이터 수신: ${JSON.stringify(measurement)}`, 'success');
+                    displayMeasurement(measurement, 'client-measurements');
+                });
+                log('모든 측정 데이터 구독 시작', 'info');
+            }
+        }
+        
+        function subscribeByCode(code) {
+            if (clientStomp) {
+                clientStomp.subscribe('/topic/measurements/' + code, function(data) {
+                    const measurement = JSON.parse(data.body);
+                    log(`측정코드 ${code} 데이터 수신: ${JSON.stringify(measurement)}`, 'success');
+                    displayMeasurement(measurement, 'client-measurements');
+                });
+                log(`측정코드 ${code} 구독 시작`, 'info');
+            }
+        }
+        
+        function subscribeByDevice(deviceId) {
+            if (clientStomp) {
+                clientStomp.subscribe('/topic/device/' + deviceId, function(data) {
+                    const measurement = JSON.parse(data.body);
+                    log(`기기 ${deviceId} 데이터 수신: ${JSON.stringify(measurement)}`, 'success');
+                    displayMeasurement(measurement, 'client-measurements');
+                });
+                log(`기기 ${deviceId} 구독 시작`, 'info');
+            }
+        }
+        
+        function displayMeasurement(measurement, containerId) {
+            const container = document.getElementById(containerId);
+            const item = document.createElement('div');
+            item.className = 'measurement-item';
+            item.innerHTML = `
+                <strong>측정코드:</strong> ${measurement.measurementCode}<br>
+                <strong>기기 ID:</strong> ${measurement.deviceId}<br>
+                <strong>측정값:</strong> ${measurement.value} ${measurement.unit}<br>
+                <strong>시각:</strong> ${measurement.timestamp}
+            `;
+            container.insertBefore(item, container.firstChild);
+            
+            // 최대 10개만 유지
+            while (container.children.length > 10) {
+                container.removeChild(container.lastChild);
+            }
+        }
+        
+        // 의료 기기 연결
+        function connectDevice() {
+            const socket = new SockJS('http://localhost:8080/ws/device');
+            deviceStomp = Stomp.over(socket);
+            deviceStomp.debug = null;
+            
+            deviceStomp.connect({}, function(frame) {
+                log('의료 기기 연결 성공', 'success');
+                document.getElementById('device-status').textContent = '연결됨';
+                document.getElementById('device-status').className = 'status connected';
+                document.getElementById('device-connect-btn').disabled = true;
+                document.getElementById('device-disconnect-btn').disabled = false;
+                document.getElementById('send-btn').disabled = false;
+                document.getElementById('auto-send-btn').disabled = false;
+            }, function(error) {
+                log('의료 기기 연결 실패: ' + error, 'error');
+            });
+        }
+        
+        function disconnectDevice() {
+            stopAutoSend();
+            if (deviceStomp !== null) {
+                deviceStomp.disconnect();
+                deviceStomp = null;
+            }
+            document.getElementById('device-status').textContent = '연결 안됨';
+            document.getElementById('device-status').className = 'status disconnected';
+            document.getElementById('device-connect-btn').disabled = false;
+            document.getElementById('device-disconnect-btn').disabled = true;
+            document.getElementById('send-btn').disabled = true;
+            document.getElementById('auto-send-btn').disabled = true;
+            document.getElementById('stop-auto-send-btn').disabled = true;
+            log('의료 기기 연결 끊김', 'info');
+        }
+        
+        // 측정 데이터 전송
+        function sendMeasurement() {
+            if (!deviceStomp || !deviceStomp.connected) {
+                log('의료 기기가 연결되지 않았습니다', 'error');
+                return;
+            }
+            
+            const data = {
+                measurementCode: document.getElementById('measurement-code').value,
+                deviceId: document.getElementById('device-id').value,
+                value: parseFloat(document.getElementById('measurement-value').value),
+                unit: document.getElementById('measurement-unit').value,
+                timestamp: new Date().toISOString()
+            };
+            
+            deviceStomp.send('/app/device/measurement', {}, JSON.stringify(data));
+            log(`데이터 전송: ${JSON.stringify(data)}`, 'info');
+        }
+        
+        // 자동 전송 시작
+        function startAutoSend() {
+            if (autoSendInterval) {
+                return;
+            }
+            
+            autoSendInterval = setInterval(function() {
+                // 랜덤 값 생성 (시뮬레이션)
+                const baseValue = parseFloat(document.getElementById('measurement-value').value);
+                const randomValue = baseValue + (Math.random() * 10 - 5); // ±5 범위
+                document.getElementById('measurement-value').value = randomValue.toFixed(1);
+                sendMeasurement();
+            }, 2000); // 2초마다 전송
+            
+            document.getElementById('auto-send-btn').disabled = true;
+            document.getElementById('stop-auto-send-btn').disabled = false;
+            log('자동 전송 시작 (2초 간격)', 'info');
+        }
+        
+        function stopAutoSend() {
+            if (autoSendInterval) {
+                clearInterval(autoSendInterval);
+                autoSendInterval = null;
+                document.getElementById('auto-send-btn').disabled = false;
+                document.getElementById('stop-auto-send-btn').disabled = true;
+                log('자동 전송 중지', 'info');
+            }
+        }
+        
+        // 페이지 로드 시 초기화
+        window.onload = function() {
+            log('테스트 클라이언트 준비 완료', 'info');
+        };
+    </script>
+</body>
+</html>
+
