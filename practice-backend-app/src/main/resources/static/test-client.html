@@ -93,6 +93,13 @@
 <body>
     <h1>의료 기기 WebSocket 실시간 모니터링 테스트</h1>
     
+    <div class="panel" style="margin-bottom: 20px;">
+        <h2>서버 설정</h2>
+        <label>서버 주소:</label>
+        <input type="text" id="server-address" value="http://localhost:8080" placeholder="예: http://localhost:8080" style="width: 300px;"><br>
+        <small style="color: #666;">예: http://192.168.1.100:8080 또는 http://localhost:8080</small>
+    </div>
+    
     <div class="container">
         <!-- 웹 클라이언트 패널 -->
         <div class="panel">
@@ -101,18 +108,25 @@
             <button id="client-connect-btn" onclick="connectClient()">연결</button>
             <button id="client-disconnect-btn" onclick="disconnectClient()" disabled>연결 끊기</button>
             
+            <h3>WebSocket 엔드포인트</h3>
+            <label>클라이언트 엔드포인트:</label>
+            <input type="text" id="client-endpoint" value="/ws/client" placeholder="예: /ws/client" style="width: 200px;"><br>
+            
             <h3>구독 옵션</h3>
             <label>
-                <input type="checkbox" id="subscribe-all" checked> 모든 측정 데이터 (/topic/measurements)
-            </label><br>
+                <input type="checkbox" id="subscribe-all" checked> 모든 측정 데이터
+            </label>
+            <input type="text" id="subscribe-all-topic" value="/topic/measurements" placeholder="/topic/measurements" style="width: 250px; margin-left: 5px;"><br>
             <label>
                 <input type="checkbox" id="subscribe-by-code"> 측정코드별 구독
-                <input type="text" id="measurement-code-input" placeholder="예: BP001" style="width: 150px;">
-            </label><br>
+            </label>
+            <input type="text" id="measurement-code-input" placeholder="예: BP001" style="width: 120px; margin-left: 5px;">
+            <input type="text" id="subscribe-code-topic" value="/topic/measurements/" placeholder="/topic/measurements/" style="width: 200px; margin-left: 5px;"><br>
             <label>
                 <input type="checkbox" id="subscribe-by-device"> 기기별 구독
-                <input type="text" id="device-id-input" placeholder="예: DEVICE-001" style="width: 150px;">
             </label>
+            <input type="text" id="device-id-input" placeholder="예: DEVICE-001" style="width: 120px; margin-left: 5px;">
+            <input type="text" id="subscribe-device-topic" value="/topic/device/" placeholder="/topic/device/" style="width: 200px; margin-left: 5px;"><br>
             
             <h3>수신된 데이터</h3>
             <div id="client-measurements"></div>
@@ -124,6 +138,14 @@
             <div id="device-status" class="status disconnected">연결 안됨</div>
             <button id="device-connect-btn" onclick="connectDevice()">연결</button>
             <button id="device-disconnect-btn" onclick="disconnectDevice()" disabled>연결 끊기</button>
+            
+            <h3>WebSocket 엔드포인트</h3>
+            <label>디바이스 엔드포인트:</label>
+            <input type="text" id="device-endpoint" value="/ws/device" placeholder="예: /ws/device" style="width: 200px;"><br>
+            
+            <h3>데이터 전송 경로</h3>
+            <label>전송 경로:</label>
+            <input type="text" id="send-path" value="/app/device/measurement" placeholder="/app/device/measurement" style="width: 250px;"><br>
             
             <h3>측정 데이터 입력</h3>
             <label>측정코드:</label>
@@ -161,7 +183,23 @@
         
         // 웹 클라이언트 연결
         function connectClient() {
-            const socket = new SockJS('http://localhost:8080/ws/client');
+            const serverAddress = document.getElementById('server-address').value.trim();
+            const clientEndpoint = document.getElementById('client-endpoint').value.trim();
+            
+            if (!serverAddress) {
+                log('서버 주소를 입력하세요', 'error');
+                return;
+            }
+            
+            if (!clientEndpoint) {
+                log('클라이언트 엔드포인트를 입력하세요', 'error');
+                return;
+            }
+            
+            const wsUrl = serverAddress + clientEndpoint;
+            log(`웹 클라이언트 연결 시도: ${wsUrl}`, 'info');
+            
+            const socket = new SockJS(wsUrl);
             clientStomp = Stomp.over(socket);
             clientStomp.debug = null; // 디버그 메시지 비활성화
             
@@ -206,34 +244,51 @@
         
         function subscribeToAll() {
             if (clientStomp) {
-                clientStomp.subscribe('/topic/measurements', function(data) {
+                const topic = document.getElementById('subscribe-all-topic').value.trim();
+                if (!topic) {
+                    log('구독 토픽을 입력하세요', 'error');
+                    return;
+                }
+                clientStomp.subscribe(topic, function(data) {
                     const measurement = JSON.parse(data.body);
                     log(`모든 측정 데이터 수신: ${JSON.stringify(measurement)}`, 'success');
                     displayMeasurement(measurement, 'client-measurements');
                 });
-                log('모든 측정 데이터 구독 시작', 'info');
+                log(`모든 측정 데이터 구독 시작: ${topic}`, 'info');
             }
         }
         
         function subscribeByCode(code) {
             if (clientStomp) {
-                clientStomp.subscribe('/topic/measurements/' + code, function(data) {
+                const topicPrefix = document.getElementById('subscribe-code-topic').value.trim();
+                if (!topicPrefix) {
+                    log('구독 토픽을 입력하세요', 'error');
+                    return;
+                }
+                const topic = topicPrefix + code;
+                clientStomp.subscribe(topic, function(data) {
                     const measurement = JSON.parse(data.body);
                     log(`측정코드 ${code} 데이터 수신: ${JSON.stringify(measurement)}`, 'success');
                     displayMeasurement(measurement, 'client-measurements');
                 });
-                log(`측정코드 ${code} 구독 시작`, 'info');
+                log(`측정코드 ${code} 구독 시작: ${topic}`, 'info');
             }
         }
         
         function subscribeByDevice(deviceId) {
             if (clientStomp) {
-                clientStomp.subscribe('/topic/device/' + deviceId, function(data) {
+                const topicPrefix = document.getElementById('subscribe-device-topic').value.trim();
+                if (!topicPrefix) {
+                    log('구독 토픽을 입력하세요', 'error');
+                    return;
+                }
+                const topic = topicPrefix + deviceId;
+                clientStomp.subscribe(topic, function(data) {
                     const measurement = JSON.parse(data.body);
                     log(`기기 ${deviceId} 데이터 수신: ${JSON.stringify(measurement)}`, 'success');
                     displayMeasurement(measurement, 'client-measurements');
                 });
-                log(`기기 ${deviceId} 구독 시작`, 'info');
+                log(`기기 ${deviceId} 구독 시작: ${topic}`, 'info');
             }
         }
         
@@ -257,7 +312,23 @@
         
         // 의료 기기 연결
         function connectDevice() {
-            const socket = new SockJS('http://localhost:8080/ws/device');
+            const serverAddress = document.getElementById('server-address').value.trim();
+            const deviceEndpoint = document.getElementById('device-endpoint').value.trim();
+            
+            if (!serverAddress) {
+                log('서버 주소를 입력하세요', 'error');
+                return;
+            }
+            
+            if (!deviceEndpoint) {
+                log('디바이스 엔드포인트를 입력하세요', 'error');
+                return;
+            }
+            
+            const wsUrl = serverAddress + deviceEndpoint;
+            log(`의료 기기 연결 시도: ${wsUrl}`, 'info');
+            
+            const socket = new SockJS(wsUrl);
             deviceStomp = Stomp.over(socket);
             deviceStomp.debug = null;
             
@@ -297,6 +368,12 @@
                 return;
             }
             
+            const sendPath = document.getElementById('send-path').value.trim();
+            if (!sendPath) {
+                log('전송 경로를 입력하세요', 'error');
+                return;
+            }
+            
             const data = {
                 measurementCode: document.getElementById('measurement-code').value,
                 deviceId: document.getElementById('device-id').value,
@@ -305,8 +382,8 @@
                 timestamp: new Date().toISOString()
             };
             
-            deviceStomp.send('/app/device/measurement', {}, JSON.stringify(data));
-            log(`데이터 전송: ${JSON.stringify(data)}`, 'info');
+            deviceStomp.send(sendPath, {}, JSON.stringify(data));
+            log(`데이터 전송 [${sendPath}]: ${JSON.stringify(data)}`, 'info');
         }
         
         // 자동 전송 시작
